@@ -21,6 +21,19 @@ This working tree is intended to diverge from the upstream CLIProxyAPIPlus proje
 - `internal/api/server.go`
 - `internal/config/config.go`
 
+## 4. Embedded models.json kept in sync with remote catalog
+- `gpt-5.4-mini` was present in the remote models catalog (`router-for-me/models`) for all codex tiers but absent from the embedded `models.json` baked into the binary.
+- Without this fix the model was only available after the background 3-hour refresh succeeded; on a fresh server start it would silently disappear until the first refresh.
+- The embedded catalog is patched to include `gpt-5.4-mini` in `codex-free`, `codex-team`, `codex-plus`, and `codex-pro` tiers so the model is available immediately on startup.
+
+## Relevant files in this tree
+- `README.md`
+- `config.example.yaml`
+- `internal/managementasset/updater.go`
+- `internal/api/server.go`
+- `internal/config/config.go`
+- `internal/registry/models/models.json`
+
 ## Notes
 - The panel-specific functional divergence is committed in the separate forked management-center repository.
 - This document records the intended differences between this local fork and the upstream `router-for-me/CLIProxyAPIPlus` repository.
