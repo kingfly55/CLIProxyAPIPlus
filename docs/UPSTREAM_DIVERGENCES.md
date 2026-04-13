@@ -34,6 +34,26 @@ This working tree is intended to diverge from the upstream CLIProxyAPIPlus proje
 - `internal/config/config.go`
 - `internal/registry/models/models.json`
 
+## 5. Auth-file quota reset and capped quota retry recovery
+- The local management API includes a manual quota reset action so auth files stuck in `quota_exceeded` can be made eligible again without waiting for the next automatic recovery path.
+- The auth conductor also caps provider-supplied `Retry-After` values to the configured quota backoff ceiling before storing cooldown state, so abnormally large upstream retry values do not suspend a credential longer than the local backoff policy intends.
+- This behavior exists specifically to support manual recovery of Codex/GPT-backed accounts in the local deployment and to keep quota cooling behavior predictable.
+
+## Relevant files in this tree
+- `internal/api/handlers/management/auth_files.go`
+- `internal/api/server.go`
+- `sdk/cliproxy/auth/conductor.go`
+
+## 6. Suffixed OAuth model aliases can fork from base registered models
+- The local deployment relies on `oauth-model-alias` entries whose source model name may include a thinking suffix, for example `gpt-5.4(xhigh)` backing the client-visible alias `claude-opus-4-6`.
+- Upstream alias exposure logic only matched exact registered model IDs, which meant aliases backed by suffixed source names were loaded in config but not exposed in `/v1/models` and did not route at request time.
+- The local fork extends alias exposure so a suffixed source name also matches the base registered model ID while preserving the forced suffix semantics for runtime routing. This keeps `claude-opus-4-6` visible and ensures it always maps to `gpt-5.4` with forced `xhigh` reasoning in this environment.
+
+## Relevant files in this tree
+- `sdk/cliproxy/service.go`
+- `sdk/cliproxy/service_oauth_model_alias_test.go`
+- `sdk/cliproxy/auth/oauth_model_alias.go`
+
 ## Notes
 - The panel-specific functional divergence is committed in the separate forked management-center repository.
 - This document records the intended differences between this local fork and the upstream `router-for-me/CLIProxyAPIPlus` repository.
