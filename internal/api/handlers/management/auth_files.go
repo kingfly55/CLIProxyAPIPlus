@@ -1325,6 +1325,82 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+// ResetQuotaState clears the quota-exceeded state for an auth file so it can
+// be selected for requests again. This is the manual escape hatch for accounts
+// stuck in quota_exceeded after an early provider-side quota reset.
+func (h *Handler) ResetQuotaState(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	var targetAuth *coreauth.Auth
+	if auth, ok := h.authManager.GetByID(name); ok {
+		targetAuth = auth
+	} else {
+		auths := h.authManager.List()
+		for _, auth := range auths {
+			if auth.FileName == name {
+				targetAuth = auth
+				break
+			}
+		}
+	}
+
+	if targetAuth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+
+	now := time.Now()
+
+	// Clear auth-level quota state.
+	targetAuth.Unavailable = false
+	targetAuth.Status = coreauth.StatusActive
+	targetAuth.StatusMessage = ""
+	targetAuth.Quota = coreauth.QuotaState{}
+	targetAuth.LastError = nil
+	targetAuth.NextRetryAfter = time.Time{}
+	targetAuth.UpdatedAt = now
+
+	// Clear per-model quota state.
+	for _, state := range targetAuth.ModelStates {
+		if state == nil {
+			continue
+		}
+		state.Unavailable = false
+		state.Status = coreauth.StatusActive
+		state.StatusMessage = ""
+		state.NextRetryAfter = time.Time{}
+		state.LastError = nil
+		state.Quota = coreauth.QuotaState{}
+		state.UpdatedAt = now
+	}
+
+	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reset quota: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 func (h *Handler) disableAuth(ctx context.Context, id string) {
 	if h == nil || h.authManager == nil {
 		return

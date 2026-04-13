@@ -2030,7 +2030,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 							backoffLevel := state.Quota.BackoffLevel
 							if !disableCooling {
 								if result.RetryAfter != nil {
-									next = now.Add(*result.RetryAfter)
+									capped := *result.RetryAfter
+									if capped > quotaBackoffMax {
+										capped = quotaBackoffMax
+									}
+									next = now.Add(capped)
 								} else {
 									cooldown, nextLevel := nextQuotaCooldown(backoffLevel, disableCooling)
 									if cooldown > 0 {
@@ -2038,6 +2042,31 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 									}
 									backoffLevel = nextLevel
 								}
+							}
+							state.NextRetryAfter = next
+							state.Quota = QuotaState{
+								Exceeded:      true,
+								Reason:        "quota",
+								NextRecoverAt: next,
+								BackoffLevel:  backoffLevel,
+							}
+							if !disableCooling {
+								suspendReason = "quota"
+								shouldSuspendModel = true
+								setModelQuota = true
+							}
+						case 408, 500, 502, 503, 504:
+							if disableCooling {
+								state.NextRetryAfter = time.Time{}
+							} else {
+								next := now.Add(1 * time.Minute)
+								state.NextRetryAfter = next
+							}
+						default:
+							state.NextRetryAfter = time.Time{}
+						}
+					}
+
 							}
 							state.NextRetryAfter = next
 							state.Quota = QuotaState{
@@ -2178,12 +2207,17 @@ func updateAggregatedAvailability(auth *Auth, now time.Time) {
 			allUnavailable = false
 		}
 		if state.Quota.Exceeded {
-			quotaExceeded = true
-			if quotaRecover.IsZero() || (!state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.Before(quotaRecover)) {
-				quotaRecover = state.Quota.NextRecoverAt
-			}
-			if state.Quota.BackoffLevel > maxBackoffLevel {
-				maxBackoffLevel = state.Quota.BackoffLevel
+			if !state.Quota.NextRecoverAt.IsZero() && !state.Quota.NextRecoverAt.After(now) {
+				// Recovery time has passed — clear stale quota state.
+				state.Quota = QuotaState{}
+			} else {
+				quotaExceeded = true
+				if quotaRecover.IsZero() || (!state.Quota.NextRecoverAt.IsZero() && state.Quota.NextRecoverAt.Before(quotaRecover)) {
+					quotaRecover = state.Quota.NextRecoverAt
+				}
+				if state.Quota.BackoffLevel > maxBackoffLevel {
+					maxBackoffLevel = state.Quota.BackoffLevel
+				}
 			}
 		}
 	}
@@ -2441,15 +2475,22 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		auth.Quota.Exceeded = true
 		auth.Quota.Reason = "quota"
 		var next time.Time
-		if !disableCooling {
-			if retryAfter != nil {
-				next = now.Add(*retryAfter)
-			} else {
-				cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
-				if cooldown > 0 {
-					next = now.Add(cooldown)
+			if !disableCooling {
+				if retryAfter != nil {
+					capped := *retryAfter
+					if capped > quotaBackoffMax {
+						capped = quotaBackoffMax
+					}
+					next = now.Add(capped)
+				} else {
+					cooldown, nextLevel := nextQuotaCooldown(auth.Quota.BackoffLevel, disableCooling)
+					if cooldown > 0 {
+						next = now.Add(cooldown)
+					}
+					auth.Quota.BackoffLevel = nextLevel
 				}
-				auth.Quota.BackoffLevel = nextLevel
+			}
+
 			}
 		}
 		auth.Quota.NextRecoverAt = next
