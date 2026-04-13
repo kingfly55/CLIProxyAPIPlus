@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules"
 	ampmodule "github.com/router-for-me/CLIProxyAPI/v6/internal/api/modules/amp"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
@@ -262,6 +263,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	if optionState.localPassword != "" {
@@ -323,6 +325,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 // setupRoutes configures the API routes for the server.
 // It defines the endpoints and associates them with their respective handlers.
 func (s *Server) setupRoutes() {
+	s.engine.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
@@ -568,6 +574,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/quota-exceeded/switch-preview-model", s.mgmt.GetSwitchPreviewModel)
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
+
+		mgmt.GET("/copilot-quota", s.mgmt.GetCopilotQuota)
 
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
@@ -960,6 +968,8 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
 	}
 
+	applySignatureCacheConfig(oldCfg, cfg)
+
 	if s.handlers != nil && s.handlers.AuthManager != nil {
 		s.handlers.AuthManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
 	}
@@ -1097,4 +1107,41 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 		}
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": err.Message})
 	}
+}
+
+func configuredSignatureCacheEnabled(cfg *config.Config) bool {
+	if cfg != nil && cfg.AntigravitySignatureCacheEnabled != nil {
+		return *cfg.AntigravitySignatureCacheEnabled
+	}
+	return true
+}
+
+func applySignatureCacheConfig(oldCfg, cfg *config.Config) {
+	newVal := configuredSignatureCacheEnabled(cfg)
+	newStrict := configuredSignatureBypassStrict(cfg)
+	if oldCfg == nil {
+		cache.SetSignatureCacheEnabled(newVal)
+		cache.SetSignatureBypassStrictMode(newStrict)
+		log.Debugf("antigravity_signature_cache_enabled toggled to %t", newVal)
+		return
+	}
+
+	oldVal := configuredSignatureCacheEnabled(oldCfg)
+	if oldVal != newVal {
+		cache.SetSignatureCacheEnabled(newVal)
+		log.Debugf("antigravity_signature_cache_enabled updated from %t to %t", oldVal, newVal)
+	}
+
+	oldStrict := configuredSignatureBypassStrict(oldCfg)
+	if oldStrict != newStrict {
+		cache.SetSignatureBypassStrictMode(newStrict)
+		log.Debugf("antigravity_signature_bypass_strict updated from %t to %t", oldStrict, newStrict)
+	}
+}
+
+func configuredSignatureBypassStrict(cfg *config.Config) bool {
+	if cfg != nil && cfg.AntigravitySignatureBypassStrict != nil {
+		return *cfg.AntigravitySignatureBypassStrict
+	}
+	return false
 }
