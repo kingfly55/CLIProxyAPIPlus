@@ -113,3 +113,30 @@ func TestApplyOAuthModelAlias_DefaultGitHubCopilotAliasViaSanitize(t *testing.T)
 		t.Fatalf("expected aliased model name %q, got %q", "models/claude-opus-4-6", out[1].Name)
 	}
 }
+
+func TestApplyOAuthModelAlias_ForkAddsAliasForSuffixedSourceName(t *testing.T) {
+	cfg := &config.Config{
+		OAuthModelAlias: map[string][]config.OAuthModelAlias{
+			"codex": {
+				{Name: "gpt-5.4(xhigh)", Alias: "claude-opus-4-6", Fork: true},
+			},
+		},
+	}
+	models := []*ModelInfo{
+		{ID: "gpt-5.4", Name: "models/gpt-5.4"},
+	}
+
+	out := applyOAuthModelAlias(cfg, "codex", "oauth", models)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 models (original + alias), got %d", len(out))
+	}
+	if out[0].ID != "gpt-5.4" {
+		t.Fatalf("expected first model id %q, got %q", "gpt-5.4", out[0].ID)
+	}
+	if out[1].ID != "claude-opus-4-6" {
+		t.Fatalf("expected second model id %q, got %q", "claude-opus-4-6", out[1].ID)
+	}
+	if out[1].Name != "models/claude-opus-4-6" {
+		t.Fatalf("expected aliased model name %q, got %q", "models/claude-opus-4-6", out[1].Name)
+	}
+}

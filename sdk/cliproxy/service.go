@@ -1512,6 +1512,11 @@ func applyOAuthModelAlias(cfg *config.Config, provider, authKind string, models 
 		}
 		key := strings.ToLower(name)
 		forward[key] = append(forward[key], aliasEntry{alias: alias, fork: aliases[i].Fork})
+		if base := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(name, ")"))); strings.Contains(base, "(") {
+			if parsed := strings.ToLower(strings.TrimSpace(strings.SplitN(base, "(", 2)[0])); parsed != "" && parsed != key {
+				forward[parsed] = append(forward[parsed], aliasEntry{alias: alias, fork: aliases[i].Fork})
+			}
+		}
 	}
 	if len(forward) == 0 {
 		return models
