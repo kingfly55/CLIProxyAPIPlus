@@ -16,24 +16,26 @@ import (
 )
 
 type UsageReporter struct {
-	provider    string
-	model       string
-	authID      string
-	authIndex   string
-	apiKey      string
-	source      string
-	requestedAt time.Time
-	once        sync.Once
+	provider      string
+	model         string
+	originalModel string
+	authID        string
+	authIndex     string
+	apiKey        string
+	source        string
+	requestedAt   time.Time
+	once          sync.Once
 }
 
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
 	apiKey := APIKeyFromContext(ctx)
 	reporter := &UsageReporter{
-		provider:    provider,
-		model:       model,
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
+		provider:      provider,
+		model:         model,
+		originalModel: OriginalModelFromContext(ctx),
+		requestedAt:   time.Now(),
+		apiKey:        apiKey,
+		source:        resolveUsageSource(auth, apiKey),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -92,16 +94,17 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool) usage.Reco
 		return usage.Record{Detail: detail, Failed: failed}
 	}
 	return usage.Record{
-		Provider:    r.provider,
-		Model:       r.model,
-		Source:      r.source,
-		APIKey:      r.apiKey,
-		AuthID:      r.authID,
-		AuthIndex:   r.authIndex,
-		RequestedAt: r.requestedAt,
-		Latency:     r.latency(),
-		Failed:      failed,
-		Detail:      detail,
+		Provider:      r.provider,
+		Model:         r.model,
+		OriginalModel: r.originalModel,
+		Source:        r.source,
+		APIKey:        r.apiKey,
+		AuthID:        r.authID,
+		AuthIndex:     r.authIndex,
+		RequestedAt:   r.requestedAt,
+		Latency:       r.latency(),
+		Failed:        failed,
+		Detail:        detail,
 	}
 }
 
@@ -114,6 +117,22 @@ func (r *UsageReporter) latency() time.Duration {
 		return 0
 	}
 	return latency
+}
+
+func OriginalModelFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil {
+		return ""
+	}
+	if v, exists := ginCtx.Get("original_model_slug"); exists {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func APIKeyFromContext(ctx context.Context) string {

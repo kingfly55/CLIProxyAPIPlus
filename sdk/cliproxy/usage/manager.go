@@ -10,16 +10,17 @@ import (
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider    string
-	Model       string
-	APIKey      string
-	AuthID      string
-	AuthIndex   string
-	Source      string
-	RequestedAt time.Time
-	Latency     time.Duration
-	Failed      bool
-	Detail      Detail
+	Provider      string
+	Model         string
+	OriginalModel string // slug as sent by client, before alias resolution (e.g. "wa-builder-sonnet")
+	APIKey        string
+	AuthID        string
+	AuthIndex     string
+	Source        string
+	RequestedAt   time.Time
+	Latency       time.Duration
+	Failed        bool
+	Detail        Detail
 }
 
 // Detail holds the token usage breakdown.

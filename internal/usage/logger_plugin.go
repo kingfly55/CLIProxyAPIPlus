@@ -78,6 +78,13 @@ type apiStats struct {
 	TotalRequests int64
 	TotalTokens   int64
 	Models        map[string]*modelStats
+	OriginalSlugs map[string]*slugStats
+}
+
+// slugStats holds aggregated metrics for a specific original model slug (e.g. "wa-builder-sonnet").
+type slugStats struct {
+	TotalRequests int64
+	TotalTokens   int64
 }
 
 // modelStats holds aggregated metrics for a specific model within an API.
@@ -89,12 +96,13 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	LatencyMs int64      `json:"latency_ms"`
-	Source    string     `json:"source"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	Timestamp     time.Time  `json:"timestamp"`
+	LatencyMs     int64      `json:"latency_ms"`
+	Source        string     `json:"source"`
+	AuthIndex     string     `json:"auth_index"`
+	Tokens        TokenStats `json:"tokens"`
+	Failed        bool       `json:"failed"`
+	OriginalModel string     `json:"original_model,omitempty"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -126,6 +134,13 @@ type APISnapshot struct {
 	TotalRequests int64                    `json:"total_requests"`
 	TotalTokens   int64                    `json:"total_tokens"`
 	Models        map[string]ModelSnapshot `json:"models"`
+	OriginalSlugs map[string]SlugSnapshot  `json:"original_slugs,omitempty"`
+}
+
+// SlugSnapshot summarises metrics for a specific original model slug.
+type SlugSnapshot struct {
+	TotalRequests int64 `json:"total_requests"`
+	TotalTokens   int64 `json:"total_tokens"`
 }
 
 // ModelSnapshot summarises metrics for a specific model.
@@ -194,17 +209,28 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 
 	stats, ok := s.apis[statsKey]
 	if !ok {
-		stats = &apiStats{Models: make(map[string]*modelStats)}
+		stats = &apiStats{
+			Models:        make(map[string]*modelStats),
+			OriginalSlugs: make(map[string]*slugStats),
+		}
 		s.apis[statsKey] = stats
 	}
-	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp: timestamp,
-		LatencyMs: normaliseLatency(record.Latency),
-		Source:    record.Source,
-		AuthIndex: record.AuthIndex,
-		Tokens:    detail,
-		Failed:    failed,
-	})
+	if stats.OriginalSlugs == nil {
+		stats.OriginalSlugs = make(map[string]*slugStats)
+	}
+	reqDetail := RequestDetail{
+		Timestamp:     timestamp,
+		LatencyMs:     normaliseLatency(record.Latency),
+		Source:        record.Source,
+		AuthIndex:     record.AuthIndex,
+		Tokens:        detail,
+		Failed:        failed,
+		OriginalModel: strings.TrimSpace(record.OriginalModel),
+	}
+	s.updateAPIStats(stats, modelName, reqDetail)
+	if slug := strings.TrimSpace(record.OriginalModel); slug != "" {
+		s.updateSlugStats(stats, slug, totalTokens)
+	}
 
 	s.requestsByDay[dayKey]++
 	s.requestsByHour[hourKey]++
@@ -223,6 +249,21 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	modelStatsValue.TotalRequests++
 	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
 	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+}
+
+// updateSlugStats aggregates per-original-slug totals (e.g. "wa-builder-sonnet").
+// Does NOT double-count api-level totals — those are already incremented by updateAPIStats.
+func (s *RequestStatistics) updateSlugStats(stats *apiStats, slug string, totalTokens int64) {
+	if stats.OriginalSlugs == nil {
+		stats.OriginalSlugs = make(map[string]*slugStats)
+	}
+	slugEntry, ok := stats.OriginalSlugs[slug]
+	if !ok {
+		slugEntry = &slugStats{}
+		stats.OriginalSlugs[slug] = slugEntry
+	}
+	slugEntry.TotalRequests++
+	slugEntry.TotalTokens += totalTokens
 }
 
 // Snapshot returns a copy of the aggregated metrics for external consumption.
@@ -254,6 +295,15 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 				TotalRequests: modelStatsValue.TotalRequests,
 				TotalTokens:   modelStatsValue.TotalTokens,
 				Details:       requestDetails,
+			}
+		}
+		if len(stats.OriginalSlugs) > 0 {
+			apiSnapshot.OriginalSlugs = make(map[string]SlugSnapshot, len(stats.OriginalSlugs))
+			for slug, slugStatsValue := range stats.OriginalSlugs {
+				apiSnapshot.OriginalSlugs[slug] = SlugSnapshot{
+					TotalRequests: slugStatsValue.TotalRequests,
+					TotalTokens:   slugStatsValue.TotalTokens,
+				}
 			}
 		}
 		result.APIs[apiName] = apiSnapshot
@@ -322,10 +372,18 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 		}
 		stats, ok := s.apis[apiName]
 		if !ok || stats == nil {
-			stats = &apiStats{Models: make(map[string]*modelStats)}
+			stats = &apiStats{
+				Models:        make(map[string]*modelStats),
+				OriginalSlugs: make(map[string]*slugStats),
+			}
 			s.apis[apiName] = stats
-		} else if stats.Models == nil {
-			stats.Models = make(map[string]*modelStats)
+		} else {
+			if stats.Models == nil {
+				stats.Models = make(map[string]*modelStats)
+			}
+			if stats.OriginalSlugs == nil {
+				stats.OriginalSlugs = make(map[string]*slugStats)
+			}
 		}
 		for modelName, modelSnapshot := range apiSnapshot.Models {
 			modelName = strings.TrimSpace(modelName)
@@ -348,6 +406,29 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 				seen[key] = struct{}{}
 				s.recordImported(apiName, modelName, stats, detail)
 				result.Added++
+			}
+		}
+		// Merge OriginalSlugs — per-slug aggregates (not per-request details).
+		// Since RequestDetail dedup doesn't apply at slug level, we replace on collision
+		// to avoid double-counting when re-importing the same snapshot.
+		for slug, slugSnapshot := range apiSnapshot.OriginalSlugs {
+			slug = strings.TrimSpace(slug)
+			if slug == "" {
+				continue
+			}
+			existing, exists := stats.OriginalSlugs[slug]
+			if !exists || existing == nil {
+				stats.OriginalSlugs[slug] = &slugStats{
+					TotalRequests: slugSnapshot.TotalRequests,
+					TotalTokens:   slugSnapshot.TotalTokens,
+				}
+				continue
+			}
+			// Prefer the larger set when merging to approximate a complete picture
+			// without double-counting identical re-imports.
+			if slugSnapshot.TotalRequests > existing.TotalRequests {
+				existing.TotalRequests = slugSnapshot.TotalRequests
+				existing.TotalTokens = slugSnapshot.TotalTokens
 			}
 		}
 	}
